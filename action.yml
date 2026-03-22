@@ -1,6 +1,6 @@
-name: 'Analyze Pull Request with OpenAI'
-description: 'This action automates the process of reviewing code from GitHub pull-requests using OpenAI API.'
-author: 'ProductDock'
+name: 'JurojinPoker-PR-Reviewer'
+description: 'Review pull requests with OpenAI Chat Completions using configurable prompts from the checked-out repository.'
+author: 'JurojinPoker-PR-Reviewer'
 branding:
   icon: git-pull-request
   color: blue
@@ -26,6 +26,22 @@ inputs:
     description: 'Maximum tokens to generate'
     required: false
     default: '500'
+  prompt_file:
+    description: 'Path relative to repository root for instruction text (highest precedence).'
+    required: false
+    default: ''
+  prompt_style:
+    description: 'One of team, technical, or users; resolves {prompts_base_path}/{style}.txt when prompt_file is empty.'
+    required: false
+    default: ''
+  prompts_base_path:
+    description: 'Directory under the repository root for prompt_style resolution.'
+    required: false
+    default: '.github/pr-review-prompts'
+  use_markdown:
+    description: 'If true, ask the model for GitHub-flavored Markdown; if false, plain concise text.'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -53,7 +69,9 @@ runs:
         DIFF_FILE_PATH: ${{ env.DIFF_FILE_PATH }}
         GPT_MODEL: ${{ inputs.GPT_MODEL }}
         MAX_TOKENS: ${{ inputs.MAX_TOKENS }}
-      run: ${{ github.action_path }}/scripts/analyze-code.sh \ 
-        $OPENAI_API_KEY $GITHUB_TOKEN $REPOSITORY $PR_NUMBER \ 
-        $DIFF_FILE_PATH $GPT_MODEL $MAX_TOKENS
+        PROMPT_FILE: ${{ inputs.prompt_file }}
+        PROMPT_STYLE: ${{ inputs.prompt_style }}
+        PROMPTS_BASE_PATH: ${{ inputs.prompts_base_path }}
+        USE_MARKDOWN: ${{ inputs.use_markdown }}
+      run: bash "${{ github.action_path }}/scripts/analyze-code.sh"
       shell: bash

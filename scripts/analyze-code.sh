@@ -3,36 +3,87 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Function to validate and initialize inputs
-initialize_inputs() {
-  local openai_api_key="$1"
-  local github_token="$2"
-  local repository="$3"
-  local pr_number="$4"
-  local diff_file_path="$5"
-  local gpt_model="$6"
-  local max_tokens="$7"
+# Legacy instruction text (ProductDock-style) when no prompt_file or prompt_style.
+readonly LEGACY_INSTRUCTION_TEXT='Based on the code diff below, please provide a summary of the major insights derived. Also, check for any potential issues or improvements. The response should be a concise summary without any additional formatting, markdown, or characters outside the summary text.'
 
-  if [[ -z "$openai_api_key" || -z "$github_token" || -z "$repository" || \
-        -z "$pr_number" || -z "$diff_file_path" || -z "$gpt_model" || \
-        -z "$max_tokens" ]]; then
-    echo "Error: Missing required input parameters."
+# Validate required environment variables (no positional args; secrets are not echoed).
+validate_required_env() {
+  if [[ -z "${OPENAI_API_KEY:-}" || -z "${GITHUB_TOKEN:-}" || -z "${REPOSITORY:-}" || \
+        -z "${PR_NUMBER:-}" || -z "${DIFF_FILE_PATH:-}" || -z "${GPT_MODEL:-}" || \
+        -z "${MAX_TOKENS:-}" ]]; then
+    echo "Error: Missing required environment variables." >&2
     exit 1
   fi
-
-  echo "$openai_api_key,$github_token,$repository,$pr_number,$diff_file_path,$gpt_model,$max_tokens"
 }
 
-# Function to prepare the prompt for OpenAI API
+# Resolve instruction text only (no diff, no format suffix). Precedence:
+# 1) PROMPT_FILE -> read file under GITHUB_WORKSPACE
+# 2) PROMPT_STYLE + PROMPTS_BASE_PATH -> read {base}/{style}.txt
+# 3) LEGACY_INSTRUCTION_TEXT
+resolve_instruction_text() {
+  local workspace="${GITHUB_WORKSPACE:-.}"
+  workspace="${workspace%/}"
+
+  local prompt_file="${PROMPT_FILE:-}"
+  local prompt_style="${PROMPT_STYLE:-}"
+  local base_path="${PROMPTS_BASE_PATH:-.github/pr-review-prompts}"
+  base_path="${base_path%/}"
+
+  if [[ -n "$prompt_file" ]]; then
+    local full_path="${workspace}/${prompt_file}"
+    if [[ ! -f "$full_path" ]]; then
+      echo "prompt_file not found: ${full_path}" >&2
+      exit 1
+    fi
+    cat "$full_path"
+    return 0
+  fi
+
+  if [[ -n "$prompt_style" ]]; then
+    case "$prompt_style" in
+      team|technical|users) ;;
+      *)
+        echo "Error: prompt_style must be one of: team, technical, users (got: ${prompt_style})" >&2
+        exit 1
+        ;;
+    esac
+    local full_path="${workspace}/${base_path}/${prompt_style}.txt"
+    if [[ ! -f "$full_path" ]]; then
+      echo "prompt style file not found: ${full_path}" >&2
+      exit 1
+    fi
+    cat "$full_path"
+    return 0
+  fi
+
+  printf '%s' "$LEGACY_INSTRUCTION_TEXT"
+}
+
+# Normalize use_markdown to true/false; default true when empty.
+use_markdown_is_true() {
+  local v="${1:-true}"
+  v=$(echo "$v" | tr '[:upper:]' '[:lower:]')
+  [[ "$v" == "true" ]]
+}
+
+# Build format suffix paragraph per spec (Spanish).
+format_instruction_suffix() {
+  local use_markdown="$1"
+  if use_markdown_is_true "$use_markdown"; then
+    printf '%s' "Responde en Markdown compatible con GitHub (GFM). Usa encabezados ## breves y listas cuando ayude; evita respuestas extremadamente largas."
+  else
+    printf '%s' "Responde en texto plano, sin Markdown; conciso."
+  fi
+}
+
+# Prepare the full prompt: instructions + format suffix + diff content.
 prepare_prompt() {
-  local instructions="Based on the code diff below, please provide a summary of the major insights derived. Also, check for any potential issues or improvements. The response should be a concise summary without any additional formatting, markdown, or characters outside the summary text."
   local diff_file_path="$1"
+  local instruction_text="$2"
+  local use_markdown="${3:-true}"
 
-  # Trim any whitespace around the file path
-  local diff_file_path
-  diff_file_path=$(echo "$1" | xargs)
+  diff_file_path=$(echo "$diff_file_path" | xargs)
 
-  # Ensure the file exists
   if [[ ! -f "$diff_file_path" ]]; then
     echo "Error: Diff file not found at path: $diff_file_path" >&2
     exit 1
@@ -41,7 +92,10 @@ prepare_prompt() {
   local diff_content
   diff_content=$(cat "$diff_file_path")
 
-  echo -e "$instructions\n\n$diff_content"
+  local format_suffix
+  format_suffix=$(format_instruction_suffix "$use_markdown")
+
+  echo -e "${instruction_text}\n\n${format_suffix}\n\n${diff_content}"
 }
 
 # Function to send the prompt to OpenAI API and get the response
@@ -84,21 +138,23 @@ post_summary_to_github() {
     "https://api.github.com/repos/$repository/issues/$pr_number/comments"
 }
 
-# Main execution flow
+# Main execution flow (reads from environment only)
 main() {
-  # Initialize inputs
-  IFS=',' read -r OPENAI_API_KEY GITHUB_TOKEN REPOSITORY PR_NUMBER DIFF_FILE_PATH GPT_MODEL MAX_TOKENS <<< "$(initialize_inputs "$@")"
+  validate_required_env
 
-  # Prepare prompt
-  FULL_PROMPT=$(prepare_prompt "$DIFF_FILE_PATH")
+  local instruction_text
+  instruction_text=$(resolve_instruction_text)
 
-  # Call OpenAI API and get the response
+  local use_md="${USE_MARKDOWN:-true}"
+  local FULL_PROMPT
+  FULL_PROMPT=$(prepare_prompt "$DIFF_FILE_PATH" "$instruction_text" "$use_md")
+
+  local RESPONSE
   RESPONSE=$(call_openai_api "$OPENAI_API_KEY" "$FULL_PROMPT" "$GPT_MODEL" "$MAX_TOKENS")
 
-  # Extract summary from the response
+  local SUMMARY
   SUMMARY=$(extract_summary "$RESPONSE")
 
-  # Post the summary to GitHub as a comment
   post_summary_to_github "$GITHUB_TOKEN" "$REPOSITORY" "$PR_NUMBER" "$SUMMARY"
 }
 

@@ -1,3 +1,6 @@
 # Ignore IntelliJ IDEA project files
 .idea/
 *.iml
+
+# Bats helper libs (cloned locally or in CI before tests)
+tests/libs/
