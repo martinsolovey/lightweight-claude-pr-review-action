@@ -4,6 +4,8 @@ GitHub Action that reviews pull requests using **OpenAI Chat Completions** (`/v1
 
 **You must run `actions/checkout` before this composite action** so `prompt_file` (if used) can be read from your repo. `prompt_style` uses built-in prompts from the action—no files needed in your repository.
 
+👉 **Quick setup:** See [INSTALL-CLIENT.md](INSTALL-CLIENT.md) for a step-by-step guide to add this action to any repository.
+
 ## Features
 
 - Extracts the code diff between base and head SHAs (same as upstream).
