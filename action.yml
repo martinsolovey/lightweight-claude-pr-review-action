@@ -42,6 +42,10 @@ inputs:
     description: 'If true, ask the model for GitHub-flavored Markdown; if false, plain concise text.'
     required: false
     default: 'true'
+  incremental_review:
+    description: 'If true, reviews only commits since the last reviewed SHA (embedded in previous comment). Falls back to full diff if no prior review exists.'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -50,9 +54,20 @@ runs:
       run: mkdir -p ${{ github.action_path }}/tmp
       shell: bash
 
+    - name: Resolve incremental base SHA
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+        REPOSITORY:   ${{ inputs.REPOSITORY }}
+        PR_NUMBER:    ${{ inputs.PR_NUMBER }}
+        INCREMENTAL:  ${{ inputs.incremental_review }}
+        HEAD_SHA:     ${{ github.event.pull_request.head.sha }}
+        BASE_SHA:     ${{ github.event.pull_request.base.sha }}
+      run: bash "${{ github.action_path }}/scripts/resolve-base-sha.sh"
+      shell: bash
+
     - name: Extract PR diff
       run: |
-        git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > ${{ github.action_path }}/tmp/pr_diff.txt
+        git diff "${{ env.DIFF_BASE_SHA }}" "${{ github.event.pull_request.head.sha }}" > ${{ github.action_path }}/tmp/pr_diff.txt
         echo "DIFF_FILE_PATH=${{ github.action_path }}/tmp/pr_diff.txt" >> $GITHUB_ENV
       shell: bash
 
@@ -73,5 +88,6 @@ runs:
         PROMPT_STYLE: ${{ inputs.prompt_style }}
         PROMPTS_BASE_PATH: ${{ inputs.prompts_base_path }}
         USE_MARKDOWN: ${{ inputs.use_markdown }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: bash "${{ github.action_path }}/scripts/analyze-code.sh"
       shell: bash

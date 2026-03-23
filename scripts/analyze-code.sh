@@ -121,15 +121,23 @@ extract_summary() {
   echo "$response" | jq -r '.choices[0].message.content'
 }
 
-# Function to post the summary as a comment on the pull request
+# Function to post the summary as a comment on the pull request.
+# Appends an invisible HTML marker with the reviewed HEAD SHA so incremental
+# runs can find it and diff only from that point forward.
 post_summary_to_github() {
   local github_token="$1"
   local repository="$2"
   local pr_number="$3"
   local summary="$4"
+  local head_sha="${HEAD_SHA:-}"
+
+  local marker=""
+  if [[ -n "$head_sha" ]]; then
+    marker=$'\n\n'"<!-- pr-reviewer-sha: ${head_sha} -->"
+  fi
 
   local comment_body
-  comment_body=$(jq -n --arg body "$summary" '{body: $body}')
+  comment_body=$(jq -n --arg body "${summary}${marker}" '{body: $body}')
 
   curl -s -X POST \
     -H "Authorization: Bearer $github_token" \

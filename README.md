@@ -10,6 +10,7 @@ GitHub Action that reviews pull requests using **OpenAI Chat Completions** (`/v1
 - Resolves review instructions from a file, a named style under a base directory, or a built-in legacy prompt.
 - Optional **GitHub Flavored Markdown** in the model output (default on), or plain text.
 - Posts the summary as a PR comment.
+- **Incremental review** (default on): each comment embeds a hidden SHA marker so subsequent pushes to the same PR are reviewed only from where the last review left off, not from scratch.
 
 ## Prerequisites
 
@@ -94,6 +95,7 @@ Do not set `prompt_file` or `prompt_style` to get the legacy instruction block.
 | `prompt_style` | no | *(empty)* | One of `team`, `technical`, `users`. Resolves `{prompts_base_path}/{style}.txt`. Used only if `prompt_file` is empty. Invalid values fail the job. |
 | `prompts_base_path` | no | `.github/pr-review-prompts` | Directory under the repo root for `prompt_style`. Trailing slashes are normalized. |
 | `use_markdown` | no | `true` | If `true`, instructions ask for concise **GFM** (e.g. `##` headings, lists). If `false`, instructions ask for plain concise text. |
+| `incremental_review` | no | `true` | If `true`, each run reviews only the commits added since the previous review. The last reviewed SHA is embedded as a hidden HTML marker in the comment. Falls back to a full diff when no prior review exists or the SHA is no longer reachable (e.g. after a force push). Set to `false` to always review the full PR diff. |
 
 ### Instruction resolution order
 
@@ -102,6 +104,22 @@ Do not set `prompt_file` or `prompt_style` to get the legacy instruction block.
 3. Else → use the built-in legacy instruction text (similar to ProductDock).
 
 After that, the action appends a short **format** paragraph (Markdown vs plain), then the diff content, in a single user message to the API.
+
+### Incremental review behavior
+
+When `incremental_review: true` (the default), each comment posted by the action contains a hidden HTML marker:
+
+```
+<!-- pr-reviewer-sha: <head-sha> -->
+```
+
+On the next push to the same PR, the action scans the comment history for this marker and uses the recorded SHA as the `git diff` base instead of the PR base branch. This means the model only sees what changed since the last review, keeping each comment focused and cost-efficient.
+
+Fallback to a full diff happens automatically when:
+
+- The PR has no previous review comment (first run, or comments were deleted).
+- The recorded SHA is not reachable in the local git history (force push, interactive rebase).
+- `incremental_review` is set to `false`.
 
 ## Sample prompts in this repository
 
