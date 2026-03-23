@@ -151,6 +151,12 @@ setup_env_valid() {
   local gpt_model="gpt-4o-mini"
   local max_tokens="500"
 
+  local prompt_file response_file
+  prompt_file=$(mktemp)
+  response_file=$(mktemp)
+  printf '%s' "$full_prompt" > "$prompt_file"
+  trap "rm -f '$prompt_file' '$response_file'" EXIT
+
   local mock_response='{
     "choices": [
       {
@@ -165,25 +171,39 @@ setup_env_valid() {
     echo "$mock_response"
   }
 
-  run call_openai_api "$openai_api_key" "$full_prompt" "$gpt_model" "$max_tokens"
+  run call_openai_api "$openai_api_key" "$prompt_file" "$gpt_model" "$max_tokens" "$response_file"
 
   [ "$status" -eq 0 ] || fail "Expected status 0, got $status"
-  [[ "$output" == "$mock_response" ]] || fail "Expected output '$mock_response', got '$output'"
+  [ -f "$response_file" ] || fail "Expected response to be written to file"
+  [[ "$(cat "$response_file")" == *"Test response from OpenAI API"* ]] || fail "Expected mock response in file"
 }
 
 @test "call_openai_api_with_special_chars_in_prompt" {
   local full_prompt=$'Line1\nQuote " and newline\nSecond line'
+  local prompt_file response_file
+  prompt_file=$(mktemp)
+  response_file=$(mktemp)
+  printf '%s' "$full_prompt" > "$prompt_file"
+  trap "rm -f '$prompt_file' '$response_file'" EXIT
+
   local mock_response='{"choices":[{"message":{"content":"ok"}}]}'
 
   function curl() {
     echo "$mock_response"
   }
 
-  run call_openai_api "key" "$full_prompt" "gpt-4o-mini" "100"
+  run call_openai_api "key" "$prompt_file" "gpt-4o-mini" "100" "$response_file"
   [ "$status" -eq 0 ] || fail "Expected status 0, got $status"
+  [[ "$(cat "$response_file")" == *"ok"* ]] || fail "Expected mock response in file"
 }
 
 @test "call_openai_api_failure" {
+  local prompt_file response_file
+  prompt_file=$(mktemp)
+  response_file=$(mktemp)
+  echo "prompt" > "$prompt_file"
+  trap "rm -f '$prompt_file' '$response_file'" EXIT
+
   local mock_error_response='{
     "error": {
       "message": "Invalid API key",
@@ -196,24 +216,56 @@ setup_env_valid() {
     return 1
   }
 
-  run call_openai_api "key" "prompt" "gpt-4o-mini" "500"
+  run call_openai_api "key" "$prompt_file" "gpt-4o-mini" "500" "$response_file"
 
   [ "$status" -eq 1 ] || fail "Expected status 1, got $status"
-  [[ "$output" == "$mock_error_response" ]] || fail "Expected error body in output, got '$output'"
+  [ -f "$response_file" ] || fail "Expected error body written to response file"
+  [[ "$(cat "$response_file")" == *"Invalid API key"* ]] || fail "Expected error body in response file"
+}
+
+@test "call_openai_api_with_large_prompt" {
+  # Create a prompt file > 100KB to ensure we avoid ARG_MAX (file-based flow)
+  local prompt_file response_file
+  prompt_file=$(mktemp)
+  response_file=$(mktemp)
+  trap "rm -f '$prompt_file' '$response_file'" EXIT
+
+  # Generate ~150KB of content (would exceed ARG_MAX if passed as arg on some systems)
+  local i
+  for i in $(seq 1 1500); do
+    printf '%100s' ' ' | tr ' ' 'x' >> "$prompt_file"
+  done
+
+  local mock_response='{"choices":[{"message":{"content":"ok"}}]}'
+  function curl() {
+    echo "$mock_response"
+  }
+
+  run call_openai_api "key" "$prompt_file" "gpt-4o-mini" "100" "$response_file"
+
+  [ "$status" -eq 0 ] || fail "Expected status 0 with large prompt, got $status (possible ARG_MAX)"
+  [[ "$output" != *"Argument list too long"* ]] || fail "Should not hit ARG_MAX with file-based flow"
+  [[ "$(cat "$response_file")" == *"ok"* ]] || fail "Expected mock response in file"
 }
 
 @test "extract_summary_success" {
-  local mock_response='{
-    "choices": [
-      {
-        "message": {
-          "content": "Test response from OpenAI API"
-        }
-      }
-    ]
-  }'
+  local response_file
+  response_file=$(mktemp)
+  trap "rm -f '$response_file'" EXIT
 
-  run extract_summary "$mock_response"
+  cat > "$response_file" << 'EOF'
+{
+  "choices": [
+    {
+      "message": {
+        "content": "Test response from OpenAI API"
+      }
+    }
+  ]
+}
+EOF
+
+  run extract_summary "$response_file"
 
   [ "$status" -eq 0 ] || fail "Expected status 0, got $status"
   [[ "$output" == "Test response from OpenAI API" ]] || fail "Expected output, got '$output'"
@@ -225,11 +277,16 @@ setup_env_valid() {
   local pr_number="123"
   local summary="Test summary for GitHub"
 
+  local summary_file
+  summary_file=$(mktemp)
+  printf '%s' "$summary" > "$summary_file"
+  trap "rm -f '$summary_file'" EXIT
+
   function curl() {
     echo "Comment posted successfully"
   }
 
-  run post_summary_to_github "$github_token" "$repository" "$pr_number" "$summary"
+  run post_summary_to_github "$github_token" "$repository" "$pr_number" "$summary_file"
 
   [ "$status" -eq 0 ] || fail "Expected status 0, got $status"
   [[ "$output" == "Comment posted successfully" ]] || fail "Expected output 'Comment posted successfully', got '$output'"
@@ -241,12 +298,17 @@ setup_env_valid() {
   local pr_number="123"
   local summary="Test summary for GitHub"
 
+  local summary_file
+  summary_file=$(mktemp)
+  printf '%s' "$summary" > "$summary_file"
+  trap "rm -f '$summary_file'" EXIT
+
   function curl() {
     echo "Error posting comment to GitHub"
     return 1
   }
 
-  run post_summary_to_github "$github_token" "$repository" "$pr_number" "$summary"
+  run post_summary_to_github "$github_token" "$repository" "$pr_number" "$summary_file"
 
   [ "$status" -eq 1 ] || fail "Expected status 1, got $status"
   [[ "$output" == "Error posting comment to GitHub" ]] || fail "Expected output, got '$output'"

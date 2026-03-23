@@ -101,37 +101,49 @@ prepare_prompt() {
   echo -e "${instruction_text}\n\n${format_suffix}\n\n${diff_content}"
 }
 
-# Function to send the prompt to OpenAI API and get the response
+# Function to send the prompt to OpenAI API and get the response.
+# Uses jq --rawfile and curl -d @file to avoid ARG_MAX when diff is large.
 call_openai_api() {
   local openai_api_key="$1"
-  local full_prompt="$2"
+  local prompt_file="$2"
   local gpt_model="$3"
   local max_tokens="$4"
+  local response_file="$5"
 
-  local messages_json
-  messages_json=$(jq -n --arg body "$full_prompt" '[{"role": "user", "content": $body}]')
+  local request_file
+  request_file=$(mktemp)
+  trap 'rm -f "$request_file"' RETURN
+
+  jq -n \
+    --rawfile body "$prompt_file" \
+    --arg model "$gpt_model" \
+    --argjson max_tokens "$max_tokens" \
+    '{model: $model, messages: [{"role": "user", "content": $body}], max_tokens: $max_tokens}' \
+    > "$request_file"
 
   curl -s -X POST "https://api.openai.com/v1/chat/completions" \
     -H "Authorization: Bearer $openai_api_key" \
     -H "Content-Type: application/json" \
-    -d "{\"model\": \"$gpt_model\", \"messages\": $messages_json, \"max_tokens\": $max_tokens}"
+    -d @"$request_file" \
+    > "$response_file"
 }
 
-# Function to extract the summary from the OpenAI API response
+# Function to extract the summary from the OpenAI API response file.
 extract_summary() {
-  local response="$1"
+  local response_file="$1"
 
-  echo "$response" | jq -r '.choices[0].message.content'
+  jq -r '.choices[0].message.content' "$response_file"
 }
 
 # Function to post the summary as a comment on the pull request.
 # Appends an invisible HTML marker with the reviewed HEAD SHA so incremental
 # runs can find it and diff only from that point forward.
+# Uses jq --rawfile and curl -d @file to avoid ARG_MAX when summary is large.
 post_summary_to_github() {
   local github_token="$1"
   local repository="$2"
   local pr_number="$3"
-  local summary="$4"
+  local summary_file="$4"
   local head_sha="${HEAD_SHA:-}"
 
   local marker=""
@@ -139,34 +151,45 @@ post_summary_to_github() {
     marker=$'\n\n'"<!-- pr-reviewer-sha: ${head_sha} -->"
   fi
 
-  local comment_body
-  comment_body=$(jq -n --arg body "${summary}${marker}" '{body: $body}')
+  local comment_file
+  comment_file=$(mktemp)
+  trap 'rm -f "$comment_file"' RETURN
+
+  jq -n \
+    --rawfile body "$summary_file" \
+    --arg marker "$marker" \
+    '{body: ($body + $marker)}' \
+    > "$comment_file"
 
   curl -s -X POST \
     -H "Authorization: Bearer $github_token" \
     -H "Content-Type: application/json" \
-    -d "$comment_body" \
+    -d @"$comment_file" \
     "https://api.github.com/repos/$repository/issues/$pr_number/comments"
 }
 
-# Main execution flow (reads from environment only)
+# Main execution flow (reads from environment only).
+# Uses temp files throughout to avoid ARG_MAX with large diffs and summaries.
 main() {
   validate_required_env
 
   local instruction_text
   instruction_text=$(resolve_instruction_text)
 
+  local prompt_file response_file summary_file
+  prompt_file=$(mktemp)
+  response_file=$(mktemp)
+  summary_file=$(mktemp)
+  trap "rm -f '$prompt_file' '$response_file' '$summary_file'" EXIT
+
   local use_md="${USE_MARKDOWN:-true}"
-  local FULL_PROMPT
-  FULL_PROMPT=$(prepare_prompt "$DIFF_FILE_PATH" "$instruction_text" "$use_md")
+  prepare_prompt "$DIFF_FILE_PATH" "$instruction_text" "$use_md" > "$prompt_file"
 
-  local RESPONSE
-  RESPONSE=$(call_openai_api "$OPENAI_API_KEY" "$FULL_PROMPT" "$GPT_MODEL" "$MAX_TOKENS")
+  call_openai_api "$OPENAI_API_KEY" "$prompt_file" "$GPT_MODEL" "$MAX_TOKENS" "$response_file"
 
-  local SUMMARY
-  SUMMARY=$(extract_summary "$RESPONSE")
+  extract_summary "$response_file" > "$summary_file"
 
-  post_summary_to_github "$GITHUB_TOKEN" "$REPOSITORY" "$PR_NUMBER" "$SUMMARY"
+  post_summary_to_github "$GITHUB_TOKEN" "$REPOSITORY" "$PR_NUMBER" "$summary_file"
 }
 
 # Execute the script (need this condition to prevent running the script when sourced in bats tests)

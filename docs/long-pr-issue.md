@@ -38,15 +38,19 @@ When this happens:
 - **Function:** `call_openai_api`
 - **Line:** The `jq -n --arg body "$full_prompt"` invocation that builds the `messages` JSON for the API request
 
-## Solution (proposed)
+## Solution (implemented)
 
-Avoid passing the full prompt as a command-line argument. Options:
+The script uses a file-based flow throughout to avoid ARG_MAX:
 
-1. **Use `jq --rawfile`** — Write the prompt to a temp file and read it with `jq --rawfile body /path/to/file`.
-2. **Stream the request body** — Build the JSON payload by writing to a file and using `curl -d @file` instead of `-d "$string"`.
+1. **`call_openai_api`** — Accepts `prompt_file` instead of the prompt string. Uses `jq --rawfile body "$prompt_file"` to read the prompt, writes the full request JSON to a temp file, and sends it with `curl -d @file`. Writes the API response to `response_file` instead of stdout.
+
+2. **`extract_summary`** — Accepts `response_file` and reads from it (no large string passed as argument).
+
+3. **`post_summary_to_github`** — Accepts `summary_file` instead of the summary string. Uses `jq --rawfile body "$summary_file"` and `curl -d @file` for the comment payload, covering the case of very long model outputs.
+
+4. **`main`** — Uses temp files for prompt, response, and summary; never passes large strings as arguments.
 
 ## Related
 
 - Linux `ARG_MAX`: usually 2,097,152 bytes on modern systems (`getconf ARG_MAX`)
-- The `post_summary_to_github` function also uses `jq --arg` with the summary; summaries are typically small, but very long model outputs could hit the same limit in theory.
 - Consider documenting a recommended `MAX_TOKENS` or diff size guidance for users with very large PRs.
